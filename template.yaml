@@ -1,0 +1,529 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Isaac Sim Cloud Dashboard - Cognito login, user management, file storage (S3)
+  and one GPU EC2 instance per user running Isaac Sim (container + web viewer).
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Description: Email of the first administrator (receives a temporary password by email)
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+  AcceptNvidiaEula:
+    Type: String
+    Description: >
+      "Y" = you accept the NVIDIA Omniverse License Agreement for the Isaac Sim container image.
+    AllowedValues: ["Y"]
+  InstanceType:
+    Type: String
+    Default: g6e.2xlarge
+    Description: GPU instance type (needs NVENC, e.g. g6e, g6, g5, g7e - NOT A100/p4)
+    AllowedPattern: "^(g4dn|g5|g6|g6e|g7e)\\.[0-9]*x?large$"
+  FallbackInstanceTypes:
+    Type: String
+    Default: g6e.xlarge,g6.2xlarge,g5.2xlarge,g6.4xlarge,g5.4xlarge,g4dn.2xlarge
+    Description: >
+      Comma-separated fallback types used when InstanceType has no capacity (empty = none).
+      Tried in order in every Availability Zone.
+    AllowedPattern: "^((g4dn|g5|g6|g6e|g7e)\\.[0-9]*x?large(,(g4dn|g5|g6|g6e|g7e)\\.[0-9]*x?large)*)?$"
+  IsaacSimImage:
+    Type: String
+    Default: nvcr.io/nvidia/isaac-sim:6.2.0
+  RootVolumeSizeGiB:
+    Type: Number
+    Default: 250
+    MinValue: 150
+    MaxValue: 2000
+  MaxSessionHours:
+    Type: Number
+    Default: 8
+    MinValue: 1
+    MaxValue: 72
+    Description: Running instances are stopped automatically after this many hours (cost protection)
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id
+    Description: AWS Deep Learning Base AMI (Ubuntu 22.04, NVIDIA driver, Docker, NVIDIA Container Toolkit)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    Timeout: 30
+    MemorySize: 256
+    CodeUri: src/
+    Environment:
+      Variables:
+        PROJECT: !Ref AWS::StackName
+        FILES_BUCKET: !Ref FilesBucket
+        VPC_ID: !Ref Vpc
+        SUBNETS: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB, !Ref PublicSubnetC]]
+        SUBNET_ZONES: !Join [",", [!GetAtt PublicSubnetA.AvailabilityZone, !GetAtt PublicSubnetB.AvailabilityZone, !GetAtt PublicSubnetC.AvailabilityZone]]
+        INSTANCE_TYPES: !Sub "${InstanceType},${FallbackInstanceTypes}"
+        LAUNCH_TEMPLATE_ID: !Ref InstanceLaunchTemplate
+        LAUNCH_TEMPLATE_VERSION: !GetAtt InstanceLaunchTemplate.LatestVersionNumber
+        ISAAC_IMAGE: !Ref IsaacSimImage
+        USER_POOL_ID: !Ref UserPool
+        MAX_SESSION_HOURS: !Ref MaxSessionHours
+
+Resources:
+  # ------------------------------------------------------------------ Network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-vpc" }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.0.0/20
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public-a" }]
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.16.0/20
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public-b" }]
+
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.32.0/20
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub "${AWS::StackName}-public-c" }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetCRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetC
+      RouteTableId: !Ref PublicRouteTable
+
+  # ------------------------------------------------------------------ GPU instance (template)
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: files-and-status
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource:
+                  - !Sub "${FilesBucket.Arn}/users/*"
+                  - !Sub "${FilesBucket.Arn}/_status/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt FilesBucket.Arn
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  InstanceLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile: { Arn: !GetAtt InstanceProfile.Arn }
+        MetadataOptions:
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: !Ref RootVolumeSizeGiB
+              VolumeType: gp3
+              Iops: 6000
+              Throughput: 500
+              Encrypted: true
+              DeleteOnTermination: true
+
+  # ------------------------------------------------------------------ User management (Cognito)
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-users"
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: "OPTIONAL"
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+        InviteMessageTemplate:
+          EmailSubject: Your access to the Isaac Sim Dashboard
+          EmailMessage: !Sub >
+            Hello, you have been invited to the Isaac Sim Dashboard: https://${Distribution.DomainName}/ -
+            Username: {username} - Temporary password: {####} (change it at your first login).
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub "${AWS::StackName}-${AWS::AccountId}"
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: dashboard
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: [!Sub "https://${Distribution.DomainName}/"]
+      LogoutURLs: [!Sub "https://${Distribution.DomainName}/"]
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+
+  AdminsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: admins
+      Description: May manage users and all instances
+
+  FirstAdmin:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserPoolId: !Ref UserPool
+      Username: !Ref AdminEmail
+      DesiredDeliveryMediums: [EMAIL]
+      UserAttributes:
+        - { Name: email, Value: !Ref AdminEmail }
+        - { Name: email_verified, Value: "true" }
+
+  FirstAdminInGroup:
+    Type: AWS::Cognito::UserPoolUserToGroupAttachment
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: !Ref AdminsGroup
+      Username: !Ref FirstAdmin
+
+  # ------------------------------------------------------------------ Storage
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${WebsiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  FilesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: [!Sub "https://${Distribution.DomainName}"]
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedHeaders: ["*"]
+            ExposedHeaders: [ETag]
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-multipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
+
+  # ------------------------------------------------------------------ Hosting (CloudFront)
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} dashboard"
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: website
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+        DefaultCacheBehavior:
+          TargetOriginId: website
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
+
+  # ------------------------------------------------------------------ API
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Sub "https://${Distribution.DomainName}"]
+        AllowHeaders: [authorization, content-type]
+        AllowMethods: [GET, POST, DELETE, OPTIONS]
+        MaxAge: 3600
+      Auth:
+        DefaultAuthorizer: Cognito
+        Authorizers:
+          Cognito:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+              audience: [!Ref UserPoolClient]
+
+  InstanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      # Fixed name so the function may invoke itself (async start worker) without a circular reference
+      FunctionName: !Sub "${AWS::StackName}-instance"
+      Handler: instance.handler
+      Timeout: 300
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0   # a retried start worker could launch a second machine
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ec2:DescribeInstances
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeLaunchTemplateVersions
+                - ec2:RunInstances
+                - ec2:CreateSecurityGroup
+                - ec2:CreateTags
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - ec2:StartInstances
+                - ec2:StopInstances
+                - ec2:TerminateInstances
+                - ec2:ModifyInstanceAttribute
+                - ec2:AuthorizeSecurityGroupIngress
+                - ec2:RevokeSecurityGroupIngress
+                - ec2:DeleteSecurityGroup
+              Resource: "*"
+              Condition:
+                StringEquals: { "aws:ResourceTag/Project": !Ref AWS::StackName }
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !GetAtt InstanceRole.Arn
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+              Resource: !Sub "${FilesBucket.Arn}/_status/*"
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-instance"
+            - Effect: Allow
+              Action: cognito-idp:AdminGetUser
+              Resource: !GetAtt UserPool.Arn
+      Events:
+        Status:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: GET,  Path: /instance } }
+        BootLog:   { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: GET,  Path: /instance/log } }
+        Start:     { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: POST, Path: /instance/start } }
+        Stop:      { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: POST, Path: /instance/stop } }
+        Terminate: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: POST, Path: /instance/terminate } }
+        AllowIp:   { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: POST, Path: /instance/allow-ip } }
+
+  FilesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: files.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+              Resource: !Sub "${FilesBucket.Arn}/users/*"
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !GetAtt FilesBucket.Arn
+      Events:
+        List:     { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: GET,    Path: /files } }
+        Upload:   { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: POST,   Path: /files/upload-url } }
+        Download: { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: GET,    Path: /files/download-url } }
+        Delete:   { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: DELETE, Path: /files } }
+
+  AdminFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: admin.handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminDeleteUser
+                - cognito-idp:AdminGetUser
+                - cognito-idp:AdminAddUserToGroup
+                - cognito-idp:AdminRemoveUserFromGroup
+                - cognito-idp:AdminEnableUser
+                - cognito-idp:AdminDisableUser
+              Resource: !GetAtt UserPool.Arn
+            - Effect: Allow
+              Action: [ec2:DescribeInstances, ec2:DescribeSecurityGroups]
+              Resource: "*"
+            - Effect: Allow
+              Action: [ec2:StopInstances, ec2:TerminateInstances]
+              Resource: "*"
+              Condition:
+                StringEquals: { "aws:ResourceTag/Project": !Ref AWS::StackName }
+            - Effect: Allow
+              Action: [s3:DeleteObject]
+              Resource: !Sub "${FilesBucket.Arn}/*"
+            - Effect: Allow
+              Action: [s3:ListBucket]
+              Resource: !GetAtt FilesBucket.Arn
+      Events:
+        Me:          { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: GET,    Path: /me } }
+        ListUsers:   { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: GET,    Path: /admin/users } }
+        CreateUser:  { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: POST,   Path: /admin/users } }
+        DeleteUser:  { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: DELETE, Path: "/admin/users/{username}" } }
+        UpdateUser:  { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: POST,   Path: "/admin/users/{username}" } }
+        ListInst:    { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: GET,    Path: /admin/instances } }
+        InstAction:  { Type: HttpApi, Properties: { ApiId: !Ref HttpApi, Method: POST,   Path: "/admin/instances/{id}/{action}" } }
+
+  AutoStopFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: autostop.handler
+      Timeout: 120
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [ec2:DescribeInstances, ec2:DescribeSecurityGroups]
+              Resource: "*"
+            - Effect: Allow
+              Action: [ec2:StopInstances, ec2:DeleteSecurityGroup]
+              Resource: "*"
+              Condition:
+                StringEquals: { "aws:ResourceTag/Project": !Ref AWS::StackName }
+            - Effect: Allow
+              Action: [s3:DeleteObject]
+              Resource: !Sub "${FilesBucket.Arn}/_status/*"
+      Events:
+        Every15Min:
+          Type: Schedule
+          Properties:
+            Schedule: rate(15 minutes)
+
+Outputs:
+  DashboardUrl:
+    Value: !Sub "https://${Distribution.DomainName}/"
+  ApiUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  CognitoDomain:
+    Value: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+  WebsiteBucketName:
+    Value: !Ref WebsiteBucket
+  FilesBucketName:
+    Value: !Ref FilesBucket
+  DistributionId:
+    Value: !Ref Distribution

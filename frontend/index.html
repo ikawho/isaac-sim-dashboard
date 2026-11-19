@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Isaac Sim Workspace</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="config.js"></script>
+</head>
+<body>
+  <!-- Login -->
+  <main id="login-view" class="login" hidden>
+    <div class="login-box">
+      <h1>Isaac Sim Workspace</h1>
+      <p>Your own GPU machine with NVIDIA Isaac Sim, right in your browser. Sign in with the account your administrator created for you.</p>
+      <button id="btn-login" class="btn primary">Sign in</button>
+    </div>
+  </main>
+
+  <!-- Application -->
+  <div id="app-view" hidden>
+    <header class="topbar">
+      <strong class="brand">Isaac Sim Workspace</strong>
+      <nav class="tabs" role="tablist">
+        <button role="tab" class="tab" data-view="workspace" aria-selected="true">Workspace</button>
+        <button role="tab" class="tab" data-view="admin" id="tab-admin" hidden>Admin</button>
+      </nav>
+      <div class="who">
+        <span id="user-email"></span>
+        <button id="btn-logout" class="btn ghost small">Sign out</button>
+      </div>
+    </header>
+
+    <!-- Workspace -->
+    <section id="view-workspace" class="view workspace">
+      <article class="machine" aria-live="polite">
+        <div class="machine-head">
+          <h2>Your simulation machine</h2>
+          <span id="m-type" class="muted"></span>
+        </div>
+
+        <div class="readout">
+          <span id="m-dot" class="dot"></span>
+          <span id="m-state" class="state-text">Loading status …</span>
+        </div>
+        <p id="m-detail" class="detail"></p>
+
+        <ol id="m-track" class="track" hidden>
+          <li data-phase="booting">Booting</li>
+          <li data-phase="setup">Setting up</li>
+          <li data-phase="pulling">Pulling container</li>
+          <li data-phase="syncing">Fetching files</li>
+          <li data-phase="building">Building viewer</li>
+          <li data-phase="starting">Isaac Sim starting</li>
+          <li data-phase="ready">Ready</li>
+        </ol>
+
+        <details id="m-log" class="bootlog" hidden>
+          <summary>Boot log <span id="log-when" class="muted"></span></summary>
+          <pre id="log-text">Loading …</pre>
+        </details>
+
+        <section id="m-search" class="search" hidden>
+          <div class="search-head">
+            <h3>GPU capacity search</h3>
+            <span id="s-when" class="muted"></span>
+          </div>
+          <p id="s-summary" class="search-summary"></p>
+          <div class="scroll">
+            <table class="table grid">
+              <thead id="s-head"></thead>
+              <tbody id="s-body"></tbody>
+            </table>
+          </div>
+          <p class="muted search-legend">Tried in order: preferred type first in every zone, then the fallback types. A stopped machine can only start in the zone where its disk is. Hover a result for details.</p>
+        </section>
+
+        <div class="actions">
+          <a id="btn-open" class="btn primary big" target="_blank" rel="noopener" hidden>Open Isaac Sim</a>
+          <button id="btn-start" class="btn primary" hidden>Start machine</button>
+          <button id="btn-stop" class="btn" hidden>Stop machine</button>
+          <button id="btn-allow" class="btn ghost" hidden>Allow my current IP</button>
+          <button id="btn-terminate" class="btn danger ghost" hidden>Delete machine</button>
+        </div>
+
+        <dl id="m-facts" class="facts" hidden>
+          <div><dt>Public IP</dt><dd><code id="f-ip">–</code></dd></div>
+          <div><dt>Allowed for</dt><dd><code id="f-allowed">–</code></dd></div>
+          <div><dt>Running for</dt><dd id="f-hours">–</dd></div>
+          <div><dt>Native WebRTC client</dt><dd>Server <code id="f-native-ip">–</code>, Ports <code>49100 / 47998</code></dd></div>
+        </dl>
+
+        <details class="help">
+          <summary>How the machine works</summary>
+          <p>On the first start the GPU instance is set up and the Isaac Sim container is downloaded. Including the shader cache this often takes 20–30 minutes. Later starts are much faster.</p>
+          <p><b>Stop</b> keeps the disk including the cache (you only pay for storage). <b>Delete</b> removes the machine completely; your files in My files are kept.</p>
+          <p>The stream is only reachable from the IP address you started the machine from. If your IP changes (different Wi-Fi, VPN), click “Allow my current IP”.</p>
+          <p>Your files appear in Isaac Sim under <code>/workspace</code>. Anything you save there is written back to My files every 2 minutes and when the machine stops.</p>
+          <p>Running machines are stopped automatically after <span id="f-max">8</span> hours.</p>
+        </details>
+      </article>
+
+      <article class="files">
+        <div class="files-head">
+          <h2>My files</h2>
+          <label class="btn small">
+            Upload files
+            <input id="file-input" type="file" multiple hidden>
+          </label>
+        </div>
+        <div id="dropzone" class="dropzone">Drag USD scenes, meshes, scripts here</div>
+        <ul id="uploads" class="uploads"></ul>
+        <table class="table">
+          <thead><tr><th>Name</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
+          <tbody id="file-list"></tbody>
+        </table>
+        <p id="files-empty" class="empty" hidden>You have no files yet. Upload scenes or assets to open them in Isaac Sim under /workspace.</p>
+      </article>
+    </section>
+
+    <!-- Admin -->
+    <section id="view-admin" class="view admin" hidden>
+      <article>
+        <h2>Users</h2>
+        <form id="form-user" class="inline-form">
+          <input id="new-email" type="email" required placeholder="name@company.com" aria-label="Email of the new user">
+          <label class="check"><input id="new-admin" type="checkbox"> Administrator</label>
+          <button class="btn primary small" type="submit">Invite</button>
+        </form>
+        <div class="scroll">
+          <table class="table">
+            <thead><tr><th>Email</th><th>Status</th><th>Role</th><th>Machine</th><th></th></tr></thead>
+            <tbody id="user-list"></tbody>
+          </table>
+        </div>
+      </article>
+      <article>
+        <h2>All machines</h2>
+        <div class="scroll">
+          <table class="table">
+            <thead><tr><th>Owner</th><th>State</th><th>Type</th><th class="num">Hours</th><th>IP</th><th></th></tr></thead>
+            <tbody id="instance-list"></tbody>
+          </table>
+        </div>
+        <p id="inst-empty" class="empty" hidden>No machines right now.</p>
+      </article>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
