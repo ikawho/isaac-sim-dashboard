@@ -40,6 +40,12 @@ Parameters:
     MinValue: 1
     MaxValue: 72
     Description: Running instances are stopped automatically after this many hours (cost protection)
+  AllowedFrameAncestors:
+    Type: String
+    Default: https://olat.vcrp.de
+    Description: >
+      Space-separated origins that may embed the dashboard in a frame (e.g. the LMS).
+      Empty = only the dashboard itself.
   AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id
@@ -199,6 +205,7 @@ Resources:
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: !Sub "${AWS::StackName}-users"
+      UserPoolTier: LITE   # the dashboard has its own sign-in form; new pools would otherwise default to Essentials
       UsernameAttributes: [email]
       AutoVerifiedAttributes: [email]
       MfaConfiguration: "OPTIONAL"
@@ -239,7 +246,7 @@ Resources:
       SupportedIdentityProviders: [COGNITO]
       CallbackURLs: [!Sub "https://${Distribution.DomainName}/"]
       LogoutURLs: [!Sub "https://${Distribution.DomainName}/"]
-      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
+      ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]   # SRP = the dashboard's own sign-in form
       PreventUserExistenceErrors: ENABLED
       AccessTokenValidity: 60
       IdTokenValidity: 60
@@ -354,7 +361,22 @@ Resources:
           ViewerProtocolPolicy: redirect-to-https
           Compress: true
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
-          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+
+  # Like the managed SecurityHeadersPolicy, but instead of X-Frame-Options: SAMEORIGIN it allows
+  # framing by the LMS (OLAT) via CSP frame-ancestors, so the dashboard can be embedded there.
+  SecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-security-headers"
+        SecurityHeadersConfig:
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: false, Override: true }
+          ContentTypeOptions: { Override: true }
+          ReferrerPolicy: { ReferrerPolicy: strict-origin-when-cross-origin, Override: true }
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: !Sub "frame-ancestors 'self' ${AllowedFrameAncestors}"
+            Override: true
 
   # ------------------------------------------------------------------ API
   HttpApi:

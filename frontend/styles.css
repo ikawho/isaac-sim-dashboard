@@ -75,7 +75,26 @@ code { font-family: var(--mono); font-size: 0.9em; }
 .login { min-height: 100vh; display: grid; place-items: center; padding: 2rem; }
 .login-box { max-width: 30rem; }
 .login-box h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.05; margin-bottom: 1rem; }
-.login-box p { color: var(--graphite); margin: 0 0 1.75rem; max-width: 34ch; }
+.login-box .lead { color: var(--graphite); margin: 0 0 1.75rem; max-width: 34ch; }
+.auth {
+  display: grid; gap: .9rem; max-width: 24rem;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-panel);
+  padding: 1.5rem;
+}
+.auth h2 { font-size: 1.15rem; }
+.auth p { margin: 0; }
+.auth .hint { font-size: .82rem; }
+.auth label { display: grid; gap: .3rem; font-size: .88rem; font-weight: 500; }
+.auth input {
+  font: inherit; font-weight: 400; padding: .6rem .75rem; border-radius: var(--radius-ctl);
+  border: 1px solid var(--rule); background: var(--paper); color: var(--ink); width: 100%;
+}
+.auth input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+.auth .btn { justify-self: start; }
+.auth .link { justify-self: start; padding-left: 0; }
+.auth-msg { max-width: 24rem; margin: .9rem 0 0; font-size: .9rem; padding: .6rem .8rem; border-radius: var(--radius-ctl); }
+.auth-msg.error { color: var(--danger); border: 1px solid var(--danger); }
+.auth-msg.info { color: var(--ink); background: var(--ok-soft); }
 
 /* Header */
 .topbar {

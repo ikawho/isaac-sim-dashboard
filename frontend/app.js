@@ -2,9 +2,7 @@
 (() => {
   "use strict";
   const CFG = window.APP_CONFIG;
-  const REDIRECT = location.origin + "/";
   const $ = (id) => document.getElementById(id);
-  const store = sessionStorage;
 
   // ------------------------------------------------------------ Helpers
   const toastEl = $("toast");
@@ -24,64 +22,145 @@
     kids.flat().forEach((k) => n.append(k));
     return n;
   };
-  const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const randomString = () => b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const decodeJwt = (t) => JSON.parse(decodeURIComponent(escape(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")))));
+  // ------------------------------------------------------------ Login (own form + Cognito SRP)
+  // Cognito's hosted sign-in pages send "X-Frame-Options: DENY" and cannot be shown inside a frame
+  // (e.g. the OLAT course page), so the dashboard signs in through the Cognito API itself.
+  // Tokens live in sessionStorage (gone when the tab is closed), like before.
+  const Cog = window.AmazonCognitoIdentity;
+  const userPool = new Cog.CognitoUserPool({ UserPoolId: CFG.userPoolId, ClientId: CFG.clientId, Storage: sessionStorage });
+  let pendingUser = null;   // user in the middle of a challenge (new password / MFA) or a password reset
 
-  // ------------------------------------------------------------ Login (OAuth2 code + PKCE)
-  async function login() {
-    const verifier = randomString();
-    const state = randomString();
-    store.setItem("pkce_verifier", verifier);
-    store.setItem("pkce_state", state);
-    const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-    const q = new URLSearchParams({
-      response_type: "code", client_id: CFG.clientId, redirect_uri: REDIRECT,
-      scope: "openid email profile", state, code_challenge_method: "S256", code_challenge: challenge,
-    });
-    location.assign(`${CFG.cognitoDomain}/oauth2/authorize?${q}`);
+  const AUTH_ERRORS = {
+    NotAuthorizedException: "Wrong email or password.",
+    UserNotFoundException: "Wrong email or password.",
+    PasswordResetRequiredException: "Your password has to be reset. Use “Forgot password?”.",
+    InvalidPasswordException: "The password does not meet the requirements: at least 12 characters with upper-case letters, lower-case letters and digits.",
+    InvalidParameterException: "Please check your input.",
+    CodeMismatchException: "The code is wrong. Please check it and try again.",
+    ExpiredCodeException: "The code has expired. Please request a new one.",
+    LimitExceededException: "Too many attempts. Please wait a few minutes and try again.",
+    TooManyRequestsException: "Too many attempts. Please wait a few minutes and try again.",
+    TooManyFailedAttemptsException: "Too many failed attempts. Please wait a few minutes and try again.",
+  };
+  function authError(e) {
+    const m = (e && e.message) || "";
+    if (/temporary password has expired/i.test(m)) return "Your temporary password has expired. Please ask your administrator to invite you again.";
+    if (/disabled/i.test(m)) return "Your account is disabled. Please contact your administrator.";
+    if (/password.*(policy|conform|long enough)/i.test(m)) return AUTH_ERRORS.InvalidPasswordException;
+    return AUTH_ERRORS[e && (e.code || e.name)] || m || "Sign-in failed. Please try again.";
   }
 
-  async function tokenRequest(params) {
-    const r = await fetch(`${CFG.cognitoDomain}/oauth2/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ client_id: CFG.clientId, ...params }),
-    });
-    if (!r.ok) throw new Error("Token request failed");
-    const t = await r.json();
-    store.setItem("access_token", t.access_token);
-    store.setItem("id_token", t.id_token);
-    if (t.refresh_token) store.setItem("refresh_token", t.refresh_token);
+  function authMsg(text, kind = "error") {
+    const m = $("auth-msg");
+    m.textContent = text || "";
+    m.className = `auth-msg ${kind}`;
+    m.hidden = !text;
   }
+  function showStep(step) {
+    document.querySelectorAll("form.auth").forEach((f) => (f.hidden = f.dataset.step !== step));
+    authMsg("");
+    const first = document.querySelector(`form.auth[data-step="${step}"] input`);
+    if (first) first.focus();
+  }
+  document.querySelectorAll("form.auth [data-goto]").forEach((b) => (b.onclick = () => {
+    if (b.dataset.goto === "forgot") $("fp-email").value = $("si-email").value;
+    showStep(b.dataset.goto);
+  }));
 
-  async function handleRedirect() {
-    const p = new URLSearchParams(location.search);
-    if (!p.has("code")) return;
-    history.replaceState(null, "", "/");
-    if (p.get("state") !== store.getItem("pkce_state")) throw new Error("Invalid login state");
-    await tokenRequest({
-      grant_type: "authorization_code", code: p.get("code"),
-      redirect_uri: REDIRECT, code_verifier: store.getItem("pkce_verifier"),
+  // runs a form's async action with its submit button disabled
+  function onSubmit(id, fn) {
+    $(id).onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try { await fn(); } catch (err) { authMsg(authError(err)); } finally { btn.disabled = false; }
+    };
+  }
+  const normEmail = (v) => v.trim().toLowerCase();
+  const cognitoUser = (email) => new Cog.CognitoUser({ Username: email, Pool: userPool, Storage: sessionStorage });
+
+  // Callbacks shared by sign-in, new-password and MFA steps
+  function authCallbacks(resolve, reject) {
+    return {
+      onSuccess: (session) => resolve(session),
+      onFailure: (err) => reject(err),
+      newPasswordRequired: () => { showStep("newpw"); resolve(null); },
+      totpRequired: () => { showStep("mfa"); resolve(null); },
+      mfaRequired: () => reject(new Error("SMS codes are not supported. Please contact your administrator.")),
+      mfaSetup: () => reject(new Error("Your account requires MFA setup. Please contact your administrator.")),
+    };
+  }
+  const finish = (session) => { if (session) enterApp(session); };
+
+  onSubmit("f-signin", () => new Promise((resolve, reject) => {
+    pendingUser = cognitoUser(normEmail($("si-email").value));
+    pendingUser.authenticateUser(new Cog.AuthenticationDetails({
+      Username: normEmail($("si-email").value), Password: $("si-password").value,
+    }), authCallbacks(resolve, reject));
+  }).then(finish));
+
+  onSubmit("f-newpw", () => {
+    if ($("np-password").value !== $("np-password2").value) throw new Error("The two passwords do not match.");
+    return new Promise((resolve, reject) => {
+      pendingUser.completeNewPasswordChallenge($("np-password").value, {}, authCallbacks(resolve, reject));
+    }).then(finish);
+  });
+
+  onSubmit("f-mfa", () => new Promise((resolve, reject) => {
+    pendingUser.sendMFACode($("mfa-code").value.trim(), authCallbacks(resolve, reject), "SOFTWARE_TOKEN_MFA");
+  }).then(finish));
+
+  onSubmit("f-forgot", () => new Promise((resolve, reject) => {
+    pendingUser = cognitoUser(normEmail($("fp-email").value));
+    pendingUser.forgotPassword({
+      onSuccess: resolve,
+      onFailure: reject,
+      inputVerificationCode: (data) => {
+        const dest = data && data.CodeDeliveryDetails && data.CodeDeliveryDetails.Destination;
+        $("rs-sent").textContent = `We sent a verification code to ${dest || "your email address"}.`;
+        showStep("reset");
+        resolve();
+      },
     });
-    store.removeItem("pkce_verifier");
-    store.removeItem("pkce_state");
+  }));
+
+  onSubmit("f-reset", () => new Promise((resolve, reject) => {
+    pendingUser.confirmPassword($("rs-code").value.trim(), $("rs-password").value, {
+      onSuccess: () => {
+        $("si-email").value = pendingUser.getUsername();
+        $("si-password").value = "";
+        showStep("signin");
+        authMsg("Your password was changed. Please sign in with the new password.", "info");
+        resolve();
+      },
+      onFailure: reject,
+    });
+  }));
+
+  // Current session; the SDK refreshes expired tokens with the refresh token automatically.
+  function currentSession() {
+    return new Promise((resolve, reject) => {
+      const u = userPool.getCurrentUser();
+      if (!u) return reject(new Error("not-logged-in"));
+      u.getSession((err, session) => (err || !session || !session.isValid()
+        ? reject(err || new Error("not-logged-in")) : resolve(session)));
+    });
   }
 
   async function accessToken() {
-    const t = store.getItem("access_token");
-    if (t && decodeJwt(t).exp * 1000 > Date.now() + 60000) return t;
-    const rt = store.getItem("refresh_token");
-    if (!rt) throw new Error("not-logged-in");
-    await tokenRequest({ grant_type: "refresh_token", refresh_token: rt });
-    return store.getItem("access_token");
+    try {
+      return (await currentSession()).getAccessToken().getJwtToken();
+    } catch (e) {
+      location.reload();   // session gone (e.g. refresh token expired) -> back to the sign-in form
+      throw new Error("Your session has expired. Please sign in again.");
+    }
   }
 
   function logout() {
-    store.clear();
-    const q = new URLSearchParams({ client_id: CFG.clientId, logout_uri: REDIRECT });
-    location.assign(`${CFG.cognitoDomain}/logout?${q}`);
+    const u = userPool.getCurrentUser();
+    if (u) u.signOut();
+    sessionStorage.clear();
+    location.reload();
   }
 
   // ------------------------------------------------------------ API
@@ -418,25 +497,30 @@
   }));
 
   // ------------------------------------------------------------ Start
-  $("btn-login").onclick = login;
   $("btn-logout").onclick = logout;
 
-  (async function init() {
-    try {
-      await handleRedirect();
-      await accessToken();
-    } catch {
-      $("login-view").hidden = false;
-      return;
-    }
+  async function enterApp(session) {
+    document.querySelectorAll("form.auth input").forEach((i) => (i.value = ""));
+    $("login-view").hidden = true;
     $("app-view").hidden = false;
-    const idt = store.getItem("id_token");
-    if (idt) $("user-email").textContent = decodeJwt(idt).email || "";
+    $("user-email").textContent = session.getIdToken().payload.email || "";
     try {
       const me = await api("GET", "/me");
       $("tab-admin").hidden = !me.admin;
     } catch (e) { toast(e.message, true); }
     loadInstance();
     loadFiles();
+  }
+
+  (async function init() {
+    let session;
+    try {
+      session = await currentSession();
+    } catch {
+      $("login-view").hidden = false;
+      showStep("signin");
+      return;
+    }
+    enterApp(session);
   })();
 })();

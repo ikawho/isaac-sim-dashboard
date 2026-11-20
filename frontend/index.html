@@ -9,15 +9,62 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <!-- Cognito SDK for the built-in sign-in form (SRP: the password is never sent in clear text) -->
+  <script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"
+          integrity="sha384-YkDOkBg8dBira7f28t9KbD0tG5OnnuU540fRBz8JgorAXLJOwtakyHNV7m36RDG4" crossorigin="anonymous"></script>
   <script src="config.js"></script>
 </head>
 <body>
-  <!-- Login -->
+  <!-- Login: own form instead of Cognito's hosted pages, which refuse to load inside a frame (OLAT) -->
   <main id="login-view" class="login" hidden>
     <div class="login-box">
       <h1>Isaac Sim Workspace</h1>
-      <p>Your own GPU machine with NVIDIA Isaac Sim, right in your browser. Sign in with the account your administrator created for you.</p>
-      <button id="btn-login" class="btn primary">Sign in</button>
+      <p class="lead">Your own GPU machine with NVIDIA Isaac Sim, right in your browser. Sign in with the account your administrator created for you.</p>
+
+      <form id="f-signin" class="auth" data-step="signin">
+        <label>Email <input id="si-email" type="email" autocomplete="username" required></label>
+        <label>Password <input id="si-password" type="password" autocomplete="current-password" required></label>
+        <button class="btn primary" type="submit">Sign in</button>
+        <button class="link" type="button" data-goto="forgot">Forgot password?</button>
+      </form>
+
+      <form id="f-newpw" class="auth" data-step="newpw" hidden>
+        <h2>Choose your password</h2>
+        <p class="muted">You signed in with the temporary password from your invitation. Please set your own password now.</p>
+        <label>New password <input id="np-password" type="password" autocomplete="new-password" minlength="12" required></label>
+        <label>Repeat new password <input id="np-password2" type="password" autocomplete="new-password" minlength="12" required></label>
+        <p class="muted hint">At least 12 characters with upper-case letters, lower-case letters and digits.</p>
+        <button class="btn primary" type="submit">Save password and sign in</button>
+        <button class="link" type="button" data-goto="signin">Back</button>
+      </form>
+
+      <form id="f-mfa" class="auth" data-step="mfa" hidden>
+        <h2>Authenticator code</h2>
+        <p class="muted">Enter the 6-digit code from your authenticator app.</p>
+        <label>Code <input id="mfa-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></label>
+        <button class="btn primary" type="submit">Verify</button>
+        <button class="link" type="button" data-goto="signin">Back</button>
+      </form>
+
+      <form id="f-forgot" class="auth" data-step="forgot" hidden>
+        <h2>Reset password</h2>
+        <p class="muted">We send a verification code to your email address. Check your spam folder if it does not arrive.</p>
+        <label>Email <input id="fp-email" type="email" autocomplete="username" required></label>
+        <button class="btn primary" type="submit">Send code</button>
+        <button class="link" type="button" data-goto="signin">Back to sign in</button>
+      </form>
+
+      <form id="f-reset" class="auth" data-step="reset" hidden>
+        <h2>Set a new password</h2>
+        <p id="rs-sent" class="muted"></p>
+        <label>Verification code <input id="rs-code" inputmode="numeric" autocomplete="one-time-code" required></label>
+        <label>New password <input id="rs-password" type="password" autocomplete="new-password" minlength="12" required></label>
+        <p class="muted hint">At least 12 characters with upper-case letters, lower-case letters and digits.</p>
+        <button class="btn primary" type="submit">Save new password</button>
+        <button class="link" type="button" data-goto="signin">Back to sign in</button>
+      </form>
+
+      <p id="auth-msg" class="auth-msg" role="alert" hidden></p>
     </div>
   </main>
 

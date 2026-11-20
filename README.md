@@ -1,4 +1,4 @@
-# Isaac Sim Dashboard v1.0
+# Isaac Sim Dashboard v1.1
 
 Isaac Sim Dashboard is a web page where each user signs in and starts their own cloud GPU machine running NVIDIA Isaac Sim with one click. Isaac Sim then runs in a browser tab, streamed from the machine. Use it when you need Isaac Sim but don't have a suitable NVIDIA RTX workstation, or when several people need their own Isaac Sim without sharing one computer. Every user gets private file storage that appears inside Isaac Sim, and administrators can invite users and see every machine. The whole setup lives in your own AWS account. You install it with one command and remove it with one command, both run from AWS CloudShell, a terminal in the browser that comes with every AWS account.
 
@@ -89,6 +89,8 @@ Run the install command without variables. Existing users, files and machines ar
 ./isaac.sh up
 ```
 
+When you update from v1.0, the dashboard gets its own sign-in form instead of Cognito's sign-in pages. After that update, everyone has to sign in once more; passwords stay the same. All changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 Show the installation status and all machines:
 
 ```bash
@@ -134,6 +136,16 @@ AWS_REGION=eu-west-1 ADMIN_EMAIL=your@email.com ACCEPT_EULA=Y ./isaac.sh up
 ```
 
 To run a second, independent installation next to the first one, for example for testing, also give it its own `STACK_NAME`, such as `STACK_NAME=isaac-dev`. To use another Isaac Sim version, set `ISAAC_IMAGE`; the default is `nvcr.io/nvidia/isaac-sim:6.2.0`.
+
+### Embedding the dashboard in an LMS (OLAT)
+
+The dashboard can be shown inside a course page, for example as an OLAT "External page" element pointing to the dashboard URL. It has its own sign-in form for this, because Cognito's sign-in pages refuse to load inside a frame. Only the sites listed in `FRAME_ANCESTORS` may embed it; the default is `https://olat.vcrp.de`. Give several sites separated by spaces, or an empty value to forbid embedding:
+
+```bash
+FRAME_ANCESTORS="https://olat.vcrp.de https://lms.example.org" ./isaac.sh up
+```
+
+**Open Isaac Sim** always opens the stream in a new browser tab. If the LMS blocks new tabs from the frame, allow popups for the course element.
 
 ## When something goes wrong
 
@@ -191,7 +203,7 @@ How the parts fit together: the dashboard page is served through CloudFront and 
 
 Users install from the ZIP attached to a GitHub release, so every new version needs a tag and a release. Run this on a computer with `git` and the [GitHub CLI](https://cli.github.com/) (`gh`), signed in with `gh auth login`.
 
-1. Commit and push your changes:
+1. Add the changes under a new version heading in [CHANGELOG.md](CHANGELOG.md), then commit and push:
    ```bash
    git add -A && git commit -m "Describe the change" && git push
    ```
@@ -200,8 +212,9 @@ Users install from the ZIP attached to a GitHub release, so every new version ne
    VERSION=v1.1
    git tag -a "$VERSION" -m "Isaac Sim Dashboard $VERSION" && git push origin "$VERSION"
    git archive --format=zip --prefix=isaac-sim-dashboard/ -o isaac-sim-dashboard.zip "$VERSION"
-   gh release create "$VERSION" isaac-sim-dashboard.zip --title "Isaac Sim Dashboard $VERSION" --generate-notes
-   rm isaac-sim-dashboard.zip
+   awk -v v="$VERSION" '/^## /{p=($2==v); next} p' CHANGELOG.md > release-notes.md
+   gh release create "$VERSION" isaac-sim-dashboard.zip --title "Isaac Sim Dashboard $VERSION" --notes-file release-notes.md
+   rm isaac-sim-dashboard.zip release-notes.md
    ```
 
-The `--prefix` makes the ZIP unpack into `isaac-sim-dashboard/`, which the install commands above expect.
+The `--prefix` makes the ZIP unpack into `isaac-sim-dashboard/`, which the install commands above expect. The `awk` line copies the new version's section of CHANGELOG.md into the release notes.

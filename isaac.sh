@@ -6,7 +6,8 @@
 #   ./isaac.sh down                                           # delete EVERYTHING (including files!)
 #   ./isaac.sh status
 #
-# Optional variables: STACK_NAME, AWS_REGION, INSTANCE_TYPE, FALLBACK_INSTANCE_TYPES, MAX_SESSION_HOURS, ISAAC_IMAGE
+# Optional variables: STACK_NAME, AWS_REGION, INSTANCE_TYPE, FALLBACK_INSTANCE_TYPES, MAX_SESSION_HOURS, ISAAC_IMAGE,
+#                     FRAME_ANCESTORS (sites allowed to embed the dashboard, default https://olat.vcrp.de)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -42,6 +43,7 @@ up() {
   [[ -n "${FALLBACK_INSTANCE_TYPES+x}" ]] && params+=("FallbackInstanceTypes=$FALLBACK_INSTANCE_TYPES")
   [[ -n "${MAX_SESSION_HOURS:-}" ]] && params+=("MaxSessionHours=$MAX_SESSION_HOURS")
   [[ -n "${ISAAC_IMAGE:-}"       ]] && params+=("IsaacSimImage=$ISAAC_IMAGE")
+  [[ -n "${FRAME_ANCESTORS+x}"   ]] && params+=("AllowedFrameAncestors=$FRAME_ANCESTORS")
 
   say "Deploying stack '$STACK' to $REGION (the first time takes about 5-10 minutes, CloudFront is slow) ..."
   sam deploy \
@@ -54,8 +56,8 @@ up() {
     --no-fail-on-empty-changeset \
     --parameter-overrides "${params[@]}"
 
-  local site files api domain client dist url
-  site=$(output WebsiteBucketName); api=$(output ApiUrl); domain=$(output CognitoDomain)
+  local site files api domain pool client dist url
+  site=$(output WebsiteBucketName); api=$(output ApiUrl); domain=$(output CognitoDomain); pool=$(output UserPoolId)
   client=$(output UserPoolClientId); dist=$(output DistributionId); url=$(output DashboardUrl)
 
   say "Uploading frontend to s3://$site ..."
@@ -66,6 +68,7 @@ window.APP_CONFIG = {
   apiUrl: "$api",
   cognitoDomain: "$domain",
   clientId: "$client",
+  userPoolId: "$pool",
   region: "$REGION"
 };
 EOF
