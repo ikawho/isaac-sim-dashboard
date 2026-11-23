@@ -65,12 +65,14 @@ aws cognito-idp admin-set-user-password --user-pool-id <POOL_ID> --username <ADM
 | Button | What it does | Cost while in this state |
 |---|---|---|
 | **Stop machine** | Shuts the machine down but keeps its disk, so the next start takes only a few minutes. | Disk storage only, about 20–25 USD per month |
-| **Delete machine** | Removes the machine and its disk. Your files are kept. The next start is a full 20–30 minute first start again. | Nothing |
+| **Delete machine** | Removes the machine and its disk. Your files are kept. The next start is a full 20–30 minute first start again. Click twice: the first click turns the button red, the second deletes. | Nothing |
 | **Allow my current IP** | The stream only works from the internet address you started the machine from. Click this after changing networks, for example to another Wi-Fi or a VPN. | – |
 
 Files you upload under **My files** appear in Isaac Sim in the folder `/workspace`. What you save there is copied back every 2 minutes and when the machine stops. Running machines are stopped automatically after 8 hours, so a forgotten machine doesn't keep costing money.
 
 Administrators see an extra **Admin** tab (**Verwaltung** in German), where they can invite users by email, make other users admins, disable accounts, and stop or delete any machine.
+
+Every **Delete** button, for files, your machine and in the Admin tab, asks for a second click instead of opening a browser pop-up, because pop-ups don't appear when the dashboard is embedded in OLAT. If you don't click again within 5 seconds, nothing is deleted.
 
 The dashboard is in German by default. Use the German and UK flags at the top right to switch between German and English; the browser remembers the choice. Only the dashboard itself is translated. Status details and error messages sent by the server, the boot log, emails and everything in CloudShell stay in English.
 
@@ -91,7 +93,11 @@ Run the install command without variables. Existing users, files and machines ar
 ./isaac.sh up
 ```
 
-When you update from v1.0, the dashboard gets its own sign-in form instead of Cognito's sign-in pages. After that update, everyone has to sign in once more; passwords stay the same. All changes are listed in [CHANGELOG.md](CHANGELOG.md).
+When you update from v1.0, the dashboard gets its own sign-in form instead of Cognito's sign-in pages. After that update, everyone has to sign in once more; passwords stay the same.
+
+When you update from v1.1, nobody has to sign in again. Reload the dashboard once (Ctrl+Shift+R) so the browser loads the new files; it then opens in German.
+
+All changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 Show the installation status and all machines:
 
@@ -210,9 +216,9 @@ Users install from the ZIP attached to a GitHub release, so every new version ne
    ```bash
    git add -A && git commit -m "Describe the change" && git push
    ```
-2. Pick the new version number and update the title of this README if it changed. Then tag the release, build the ZIP from the tag, and publish it. Replace `v1.1` with the new version:
+2. Pick the new version number and update the title of this README if it changed. Then tag the release, build the ZIP from the tag, and publish it. Replace `v1.3` with the new version:
    ```bash
-   VERSION=v1.1
+   VERSION=v1.3
    git tag -a "$VERSION" -m "Isaac Sim Dashboard $VERSION" && git push origin "$VERSION"
    git archive --format=zip --prefix=isaac-sim-dashboard/ -o isaac-sim-dashboard.zip "$VERSION"
    awk -v v="$VERSION" '/^## /{p=($2==v); next} p' CHANGELOG.md > release-notes.md

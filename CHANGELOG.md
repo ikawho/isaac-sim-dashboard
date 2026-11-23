@@ -8,6 +8,10 @@ All notable changes to Isaac Sim Dashboard. Newest version first.
 
 - **German and English dashboard.** German is the default; two flag buttons (Germany, UK) at the top right switch the language without reloading, and the browser remembers the choice. German texts address users formally ("Sie"). Dates and numbers follow the chosen language. Only the dashboard's own texts are translated: status details and error messages from the server, the boot log, AWS error codes, emails and all CloudShell output stay in English. New file `frontend/i18n.js` holds all texts.
 
+### Changed
+
+- README: describes the language switch, the second click on every **Delete** button, and what to expect when updating from v1.1.
+
 ### Fixed
 
 - On phones the dashboard no longer scrolls sideways: the machine card, My files and the Admin tables fit the screen, and wide tables scroll inside their card.
