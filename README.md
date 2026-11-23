@@ -2,6 +2,15 @@
 
 Isaac Sim Dashboard is a web page where each user signs in and starts their own cloud GPU machine running NVIDIA Isaac Sim with one click. Isaac Sim then runs in a browser tab, streamed from the machine. Use it when you need Isaac Sim but don't have a suitable NVIDIA RTX workstation, or when several people need their own Isaac Sim without sharing one computer. Every user gets private file storage that appears inside Isaac Sim, and administrators can invite users and see every machine. The whole setup lives in your own AWS account. You install it with one command and remove it with one command, both run from AWS CloudShell, a terminal in the browser that comes with every AWS account.
 
+## What's new in v1.2
+
+- **German and English.** The dashboard opens in German; the flags at the top right switch to English and back.
+- **Two-click delete.** Every **Delete** button asks for a second click instead of a browser pop-up, so deleting works inside OLAT too.
+- **Automatic repair of the "S3 Bucket does not exist" error.** `./isaac.sh up` recreates SAM's upload bucket when it was deleted.
+- **Phone layout.** The dashboard no longer scrolls sideways on phones.
+
+All changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## Prerequisites
 
 You need:
