@@ -2,6 +2,22 @@
 
 All notable changes to Isaac Sim Dashboard. Newest version first.
 
+## v1.2 — 2026-11-23
+
+### Added
+
+- **German and English dashboard.** German is the default; two flag buttons (Germany, UK) at the top right switch the language without reloading, and the browser remembers the choice. German texts address users formally ("Sie"). Dates and numbers follow the chosen language. Only the dashboard's own texts are translated: status details and error messages from the server, the boot log, AWS error codes, emails and all CloudShell output stay in English. New file `frontend/i18n.js` holds all texts.
+
+### Fixed
+
+- On phones the dashboard no longer scrolls sideways: the machine card, My files and the Admin tables fit the screen, and wide tables scroll inside their card.
+- Deleting files, machines and users works inside OLAT. The browser's confirmation pop-ups, which don't appear inside the course frame, are replaced by a second click: the first click on **Delete** turns it into a red **Löschen?** / **Delete?** button for 5 seconds, and a second click deletes.
+- `./isaac.sh up` no longer fails with "S3 Bucket does not exist" when SAM's upload bucket was deleted. It detects the missing bucket, removes SAM's stale helper stack `aws-sam-cli-managed-default`, and SAM creates a new bucket in the same run.
+
+### Upgrading from v1.1
+
+Download `isaac-sim-dashboard.zip` from the v1.2 release, replace the old folder in CloudShell and run `./isaac.sh up`. Users, files and machines are kept, and nobody has to sign in again. Reload the dashboard (Ctrl+Shift+R) so the browser loads the new files; it then opens in German.
+
 ## v1.1 — 2026-11-20
 
 The dashboard can now be embedded in a learning management system such as OLAT. Cognito's own sign-in pages refuse to load inside a frame (they send `X-Frame-Options: DENY`), so the dashboard now has its own sign-in form.

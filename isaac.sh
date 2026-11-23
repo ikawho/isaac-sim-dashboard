@@ -45,6 +45,8 @@ up() {
   [[ -n "${ISAAC_IMAGE:-}"       ]] && params+=("IsaacSimImage=$ISAAC_IMAGE")
   [[ -n "${FRAME_ANCESTORS+x}"   ]] && params+=("AllowedFrameAncestors=$FRAME_ANCESTORS")
 
+  ensure_sam_bucket
+
   say "Deploying stack '$STACK' to $REGION (the first time takes about 5-10 minutes, CloudFront is slow) ..."
   sam deploy \
     --template-file template.yaml \
@@ -81,6 +83,21 @@ EOF
   echo
   say "Done. Dashboard: $url"
   say "The first admin ($email) receives a temporary password by email."
+}
+
+# sam deploy --resolve-s3 keeps its upload bucket in the stack "aws-sam-cli-managed-default".
+# If that bucket was deleted but the stack wasn't, SAM fails with "S3 Bucket does not exist".
+# Delete the stale stack so SAM creates a fresh one with a new bucket.
+ensure_sam_bucket() {
+  local ms=aws-sam-cli-managed-default bucket err
+  bucket=$(aws cloudformation describe-stack-resource --stack-name "$ms" --logical-resource-id SamCliSourceBucket \
+             --query StackResourceDetail.PhysicalResourceId --output text 2>/dev/null) || return 0   # no stack yet: SAM creates it
+  err=$(aws s3api head-bucket --bucket "$bucket" 2>&1 >/dev/null) && return 0                       # bucket is fine
+  [[ "$err" == *404* || "$err" == *"Not Found"* || "$err" == *NoSuchBucket* ]] || return 0           # e.g. 403: leave it to SAM
+  warn "SAM's upload bucket '$bucket' no longer exists. Recreating SAM's helper stack '$ms' ..."
+  aws cloudformation delete-stack --stack-name "$ms"
+  aws cloudformation wait stack-delete-complete --stack-name "$ms" \
+    || die "Could not delete '$ms'. Delete it in the CloudFormation console ($REGION), then run ./isaac.sh up again."
 }
 
 check_quota() {

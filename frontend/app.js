@@ -3,6 +3,7 @@
   "use strict";
   const CFG = window.APP_CONFIG;
   const $ = (id) => document.getElementById(id);
+  const { t } = window.i18n;   // dashboard texts in German / English (i18n.js); server texts stay English
 
   // ------------------------------------------------------------ Helpers
   const toastEl = $("toast");
@@ -14,9 +15,24 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => (toastEl.hidden = true), isError ? 7000 : 3500);
   }
-  const fmtSize = (b) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB`
-    : b < 1073741824 ? `${(b / 1048576).toFixed(1)} MB` : `${(b / 1073741824).toFixed(2)} GB`;
-  const fmtDate = (s) => new Date(s).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
+  // In-page "click twice" confirmation. Browser confirm() dialogs are blocked inside LMS frames (OLAT),
+  // so the first click turns the button into a confirm button for 5 seconds; the second click runs the action.
+  function confirmClick(btn, action, hint, label = t("confirm.delete")) {
+    if (btn.dataset.armed) {
+      clearTimeout(btn._disarm); delete btn.dataset.armed; btn.textContent = btn._label;
+      action();
+      return;
+    }
+    btn._label = btn.textContent;
+    btn.dataset.armed = "1";
+    btn.textContent = label;
+    if (hint) toast(hint);
+    btn._disarm = setTimeout(() => { delete btn.dataset.armed; btn.textContent = btn._label; }, 5000);
+  }
+  const num = (n, digits) => n.toLocaleString(i18n.locale(), { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const fmtSize = (b) => b < 1024 ? `${b} B` : b < 1048576 ? `${num(b / 1024, 1)} KB`
+    : b < 1073741824 ? `${num(b / 1048576, 1)} MB` : `${num(b / 1073741824, 2)} GB`;
+  const fmtDate = (s) => new Date(s).toLocaleString(i18n.locale(), { dateStyle: "short", timeStyle: "short" });
   const el = (tag, props = {}, ...kids) => {
     const n = Object.assign(document.createElement(tag), props);
     kids.flat().forEach((k) => n.append(k));
@@ -30,25 +46,30 @@
   const userPool = new Cog.CognitoUserPool({ UserPoolId: CFG.userPoolId, ClientId: CFG.clientId, Storage: sessionStorage });
   let pendingUser = null;   // user in the middle of a challenge (new password / MFA) or a password reset
 
+  // Cognito error code -> text key
   const AUTH_ERRORS = {
-    NotAuthorizedException: "Wrong email or password.",
-    UserNotFoundException: "Wrong email or password.",
-    PasswordResetRequiredException: "Your password has to be reset. Use “Forgot password?”.",
-    InvalidPasswordException: "The password does not meet the requirements: at least 12 characters with upper-case letters, lower-case letters and digits.",
-    InvalidParameterException: "Please check your input.",
-    CodeMismatchException: "The code is wrong. Please check it and try again.",
-    ExpiredCodeException: "The code has expired. Please request a new one.",
-    LimitExceededException: "Too many attempts. Please wait a few minutes and try again.",
-    TooManyRequestsException: "Too many attempts. Please wait a few minutes and try again.",
-    TooManyFailedAttemptsException: "Too many failed attempts. Please wait a few minutes and try again.",
+    NotAuthorizedException: "auth.wrongCredentials",
+    UserNotFoundException: "auth.wrongCredentials",
+    PasswordResetRequiredException: "auth.resetRequired",
+    InvalidPasswordException: "auth.pwPolicy",
+    InvalidParameterException: "auth.checkInput",
+    CodeMismatchException: "auth.codeWrong",
+    ExpiredCodeException: "auth.codeExpired",
+    LimitExceededException: "auth.tooMany",
+    TooManyRequestsException: "auth.tooMany",
+    TooManyFailedAttemptsException: "auth.tooManyFailed",
   };
   function authError(e) {
     const m = (e && e.message) || "";
-    if (/temporary password has expired/i.test(m)) return "Your temporary password has expired. Please ask your administrator to invite you again.";
-    if (/disabled/i.test(m)) return "Your account is disabled. Please contact your administrator.";
-    if (/password.*(policy|conform|long enough)/i.test(m)) return AUTH_ERRORS.InvalidPasswordException;
-    return AUTH_ERRORS[e && (e.code || e.name)] || m || "Sign-in failed. Please try again.";
+    if (e && e.i18n) return t(e.i18n);
+    if (/temporary password has expired/i.test(m)) return t("auth.tempExpired");
+    if (/disabled/i.test(m)) return t("auth.disabled");
+    if (/password.*(policy|conform|long enough)/i.test(m)) return t("auth.pwPolicy");
+    const key = AUTH_ERRORS[e && (e.code || e.name)];
+    return key ? t(key) : m || t("auth.failed");   // unknown Cognito messages stay as sent (English)
   }
+  // error carrying a text key, so authError() shows it in the current language
+  const keyError = (key) => Object.assign(new Error(t(key)), { i18n: key });
 
   function authMsg(text, kind = "error") {
     const m = $("auth-msg");
@@ -86,8 +107,8 @@
       onFailure: (err) => reject(err),
       newPasswordRequired: () => { showStep("newpw"); resolve(null); },
       totpRequired: () => { showStep("mfa"); resolve(null); },
-      mfaRequired: () => reject(new Error("SMS codes are not supported. Please contact your administrator.")),
-      mfaSetup: () => reject(new Error("Your account requires MFA setup. Please contact your administrator.")),
+      mfaRequired: () => reject(keyError("auth.smsUnsupported")),
+      mfaSetup: () => reject(keyError("auth.mfaSetup")),
     };
   }
   const finish = (session) => { if (session) enterApp(session); };
@@ -100,7 +121,7 @@
   }).then(finish));
 
   onSubmit("f-newpw", () => {
-    if ($("np-password").value !== $("np-password2").value) throw new Error("The two passwords do not match.");
+    if ($("np-password").value !== $("np-password2").value) throw keyError("auth.pwMismatch");
     return new Promise((resolve, reject) => {
       pendingUser.completeNewPasswordChallenge($("np-password").value, {}, authCallbacks(resolve, reject));
     }).then(finish);
@@ -110,14 +131,17 @@
     pendingUser.sendMFACode($("mfa-code").value.trim(), authCallbacks(resolve, reject), "SOFTWARE_TOKEN_MFA");
   }).then(finish));
 
+  let codeDest = null;   // masked email the reset code was sent to
+  const renderCodeSent = () => ($("rs-sent").textContent = t("reset.sent", { dest: codeDest || t("reset.yourEmail") }));
+
   onSubmit("f-forgot", () => new Promise((resolve, reject) => {
     pendingUser = cognitoUser(normEmail($("fp-email").value));
     pendingUser.forgotPassword({
       onSuccess: resolve,
       onFailure: reject,
       inputVerificationCode: (data) => {
-        const dest = data && data.CodeDeliveryDetails && data.CodeDeliveryDetails.Destination;
-        $("rs-sent").textContent = `We sent a verification code to ${dest || "your email address"}.`;
+        codeDest = (data && data.CodeDeliveryDetails && data.CodeDeliveryDetails.Destination) || null;
+        renderCodeSent();
         showStep("reset");
         resolve();
       },
@@ -130,7 +154,7 @@
         $("si-email").value = pendingUser.getUsername();
         $("si-password").value = "";
         showStep("signin");
-        authMsg("Your password was changed. Please sign in with the new password.", "info");
+        authMsg(t("reset.done"), "info");
         resolve();
       },
       onFailure: reject,
@@ -152,7 +176,7 @@
       return (await currentSession()).getAccessToken().getJwtToken();
     } catch (e) {
       location.reload();   // session gone (e.g. refresh token expired) -> back to the sign-in form
-      throw new Error("Your session has expired. Please sign in again.");
+      throw new Error(t("auth.sessionExpired"));
     }
   }
 
@@ -171,7 +195,7 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || data.message || `Error ${r.status}`);
+    if (!r.ok) throw new Error(data.error || data.message || t("error.status", { status: r.status }));
     return data;
   }
 
@@ -182,41 +206,43 @@
 
   // ------------------------------------------------------------ Machine
   const PHASES = ["booting", "setup", "pulling", "syncing", "building", "starting", "ready"];
-  const STATE_TEXT = {
-    none: "No machine", requesting: "Requesting machine", pending: "Starting", running: "Running",
-    stopping: "Stopping", stopped: "Stopped", "shutting-down": "Deleting",
-  };
+  const STATES = ["none", "requesting", "pending", "running", "stopping", "stopped", "shutting-down"];
+  const stateText = (st) => (STATES.includes(st) ? t(`state.${st}`) : st);
   let pollTimer;
+  let lastInstance = null;   // last status, re-rendered when the language changes
+  let maxHours = 8;          // auto-stop limit shown in the help text
 
+  // s.detail, s.lastError and search.detail come from the server and stay English
   function renderInstance(s) {
+    lastInstance = s;
     const st = s.state;
-    let text = STATE_TEXT[st] || st, dot = "", detail = "";
+    let text = stateText(st), dot = "", detail = "";
     if (st === "running") {
-      if (s.phase === "ready") { text = "Ready"; dot = "ok"; detail = "Isaac Sim is running and reachable."; }
-      else if (s.phase === "error") { text = "Start failed"; dot = "err"; detail = s.detail; }
+      if (s.phase === "ready") { text = t("state.ready"); dot = "ok"; detail = t("detail.ready"); }
+      else if (s.phase === "error") { text = t("state.failed"); dot = "err"; detail = s.detail; }
       else {
-        text = "Setting up"; dot = "busy"; detail = s.detail;
+        text = t("state.settingUp"); dot = "busy"; detail = s.detail;
         const mins = s.phaseSince ? Math.floor((Date.now() / 1000 - s.phaseSince) / 60) : null;
-        if (mins != null && mins >= 1) detail += ` (${mins} min in this step)`;
+        if (mins != null && mins >= 1) detail += t("detail.minutes", { n: mins });
         // normal durations: pulling ~10-20 min on first start, starting up to ~30 min (shader cache)
         const limit = { pulling: 40, starting: 45 }[s.phase] || 20;
         if (mins != null && mins >= limit) {
           dot = "err";
-          detail += " – this is taking unusually long. Check the boot log below.";
+          detail += t("detail.tooLong");
         }
       }
     } else if (st === "requesting") {
-      dot = "busy"; detail = `${s.detail || "Looking for free GPU capacity"} …`;
+      dot = "busy"; detail = `${s.detail || t("detail.searching")} …`;
     } else if (st === "pending" || st === "stopping" || st === "shutting-down") {
       dot = "busy";
-      detail = st === "pending" ? "AWS is provisioning the GPU instance." : "";
+      detail = st === "pending" ? t("detail.pending") : "";
     } else if (st === "stopped") {
-      detail = "Disk and shader cache are kept. Starting takes only a few minutes.";
+      detail = t("detail.stopped");
     } else if (st === "none") {
-      detail = "Start a GPU machine with Isaac Sim. The first start takes about 20–30 minutes.";
+      detail = t("detail.none");
     }
     if (s.lastError && (st === "none" || st === "stopped")) {
-      text = "Start failed"; dot = "err"; detail = s.lastError;
+      text = t("state.failed"); dot = "err"; detail = s.lastError;
     }
     $("m-state").textContent = text;
     $("m-dot").className = `dot ${dot}`;
@@ -251,8 +277,8 @@
     $("f-ip").textContent = s.publicIp || "–";
     $("f-native-ip").textContent = s.publicIp || "–";
     $("f-allowed").textContent = (s.allowedIps || []).join(", ") || "–";
-    $("f-hours").textContent = s.runningHours != null ? `${s.runningHours.toLocaleString("en-GB")} h` : "–";
-    if (s.maxSessionHours) $("f-max").textContent = s.maxSessionHours;
+    $("f-hours").textContent = s.runningHours != null ? `${s.runningHours.toLocaleString(i18n.locale())} h` : "–";
+    if (s.maxSessionHours) { maxHours = s.maxSessionHours; $("f-max").textContent = maxHours; }
 
     const transitional = ["requesting", "pending", "stopping", "shutting-down"].includes(st) || (st === "running" && s.phase !== "ready" && s.phase !== "error");
     clearTimeout(pollTimer);
@@ -260,23 +286,12 @@
   }
 
   // ------------------------------------------------------------ GPU capacity search (type x zone grid)
+  // result -> pill style; labels are "result.<result>", tooltips "resultHelp.<result>" in i18n.js
   const RESULT = {
-    trying:        ["Checking …", "busy"],
-    launched:      ["Started", "ok"],
-    no_capacity:   ["No capacity", "err"],
-    not_offered:   ["Not offered", ""],
-    quota:         ["Quota full", "warn"],
-    skipped_quota: ["Skipped", ""],
-    not_tried:     ["Not needed", ""],
-    error:         ["Error", "err"],
+    trying: "busy", launched: "ok", no_capacity: "err", not_offered: "",
+    quota: "warn", skipped_quota: "", not_tried: "", error: "err",
   };
-
-  const RESULT_HELP = {
-    quota: "Running On-Demand G and VT instances quota (vCPUs) is too small for this type",
-    skipped_quota: "The vCPU quota applies to the whole region, so other zones were not tried",
-    not_offered: "AWS does not offer this instance type in this zone",
-    not_tried: "Not tried because an earlier combination already worked",
-  };
+  const RESULT_HELP = ["quota", "skipped_quota", "not_offered", "not_tried"];
 
   function renderSearch(s) {
     const box = $("m-search");
@@ -289,35 +304,39 @@
     if (box.hidden) return;
     const running = search.phase === "requesting";
     const zones = search.zones || [];
-    $("s-when").textContent = running ? "running now" : `at ${new Date(search.ts * 1000).toLocaleTimeString("en-GB", { timeStyle: "short" })}`;
+    $("s-when").textContent = running ? t("search.runningNow")
+      : t("search.at", { time: new Date(search.ts * 1000).toLocaleTimeString(i18n.locale(), { timeStyle: "short" }) });
 
     // summary line: which machine was found and whether it is connected (Isaac Sim stream ready)
     let summary;
     if (running) {
       const tried = Object.values(search.attempts || {}).filter((a) => a.result !== "trying").length;
-      summary = `Checked ${tried} of ${search.types.length * zones.length} combinations …`;
+      summary = t("search.checked", { n: tried, m: search.types.length * zones.length });
     } else if (search.phase === "error") {
-      summary = `No machine started: ${search.detail}`;
+      summary = t("search.failed", { detail: search.detail });
     } else {
       const hit = Object.entries(search.attempts || {}).find(([, a]) => a.result === "launched");
       const [type, zone] = hit ? hit[0].split("|") : [s.instanceType, s.zone];
-      const conn = s.state === "running" && s.phase === "ready" ? "connected – Isaac Sim is ready"
-        : s.state === "running" ? "not connected yet – Isaac Sim is still starting"
-        : s.state === "pending" ? "not connected yet – machine is booting"
-        : "not connected";
-      summary = `Started ${type || "?"} in ${zone || "?"}: ${conn}.`;
+      const conn = s.state === "running" && s.phase === "ready" ? t("search.connReady")
+        : s.state === "running" ? t("search.connStarting")
+        : s.state === "pending" ? t("search.connBooting")
+        : t("search.connNone");
+      summary = t("search.started", { type: type || "?", zone: zone || "?", conn });
     }
     $("s-summary").textContent = summary;
 
     // zone headers: "eu-central-1a" -> "Zone 1a" (full name as tooltip)
-    $("s-head").replaceChildren(el("tr", {}, el("th", { textContent: "Type" }),
-      ...zones.map((z) => el("th", { textContent: `Zone ${z.split("-").pop()}`, title: z }))));
-    $("s-body").replaceChildren(...search.types.map((t) => el("tr", {},
-      el("td", {}, el("code", { textContent: t })),
+    $("s-head").replaceChildren(el("tr", {}, el("th", { textContent: t("search.type") }),
+      ...zones.map((z) => el("th", { textContent: t("search.zone", { z: z.split("-").pop() }), title: z }))));
+    $("s-body").replaceChildren(...search.types.map((type) => el("tr", {},
+      el("td", {}, el("code", { textContent: type })),
       ...zones.map((z) => {
-        const a = (search.attempts || {})[`${t}|${z}`];
-        const [label, cls] = a ? (RESULT[a.result] || [a.code || a.result, "err"]) : [running ? "Waiting" : "Not tried", ""];
-        return el("td", {}, el("span", { className: `pill ${cls}`, textContent: label, title: (a && a.code) || RESULT_HELP[a && a.result] || "" }));
+        const a = (search.attempts || {})[`${type}|${z}`];
+        const known = a && a.result in RESULT;
+        const [label, cls] = a ? (known ? [t(`result.${a.result}`), RESULT[a.result]] : [a.code || a.result, "err"])
+          : [running ? t("search.waiting") : t("search.notTried"), ""];
+        const help = a && RESULT_HELP.includes(a.result) ? t(`resultHelp.${a.result}`) : "";
+        return el("td", {}, el("span", { className: `pill ${cls}`, textContent: label, title: (a && a.code) || help }));
       }),
     )));
   }
@@ -327,9 +346,10 @@
       const { log, updated } = await api("GET", "/instance/log");
       const pre = $("log-text");
       const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-      pre.textContent = log || "No log yet. The machine uploads it every 15 seconds once the setup script runs.";
+      pre.textContent = log || t("log.empty");
       if (atBottom) pre.scrollTop = pre.scrollHeight;
-      $("log-when").textContent = updated ? `· updated ${new Date(updated).toLocaleTimeString("en-GB", { timeStyle: "medium" })}` : "";
+      $("log-when").textContent = updated
+        ? t("log.updated", { time: new Date(updated).toLocaleTimeString(i18n.locale(), { timeStyle: "medium" }) }) : "";
     } catch (e) { $("log-text").textContent = e.message; }
   }
   $("m-log").addEventListener("toggle", (e) => { if (e.target.open) loadLog(); });
@@ -341,40 +361,43 @@
 
   $("btn-start").onclick = (e) => busy(e.currentTarget, async () => {
     renderInstance(await api("POST", "/instance/start"));
-    toast("Machine requested. Finding a free GPU can take a minute.");
+    toast(t("toast.requested"));
   });
   $("btn-stop").onclick = (e) => busy(e.currentTarget, async () => {
     renderInstance(await api("POST", "/instance/stop"));
-    toast("Machine is stopping. Your files are saved first.");
+    toast(t("toast.stopping"));
   });
   $("btn-allow").onclick = (e) => busy(e.currentTarget, async () => {
     renderInstance(await api("POST", "/instance/allow-ip"));
-    toast("Access switched to your current IP address.");
+    toast(t("toast.ipSwitched"));
   });
   $("btn-terminate").onclick = (e) => {
-    if (!confirm("Delete the machine permanently? Disk and shader cache will be lost, My files are kept. Changes from the last 2 minutes that were not yet synced may be lost.")) return;
-    busy(e.currentTarget, async () => {
+    const btn = e.currentTarget;
+    confirmClick(btn, () => busy(btn, async () => {
       await api("POST", "/instance/terminate");
-      toast("Machine is being deleted.");
+      toast(t("toast.deleting"));
       setTimeout(loadInstance, 2000);
-    });
+    }), t("confirm.machineHint"), t("confirm.machine"));
   };
 
   // ------------------------------------------------------------ My files
+  let lastFiles = null;   // last file list, re-rendered when the language changes
   async function loadFiles() {
-    try {
-      const { files } = await api("GET", "/files");
-      const tbody = $("file-list");
-      tbody.replaceChildren(...files.map((f) => el("tr", {},
+    try { renderFiles((await api("GET", "/files")).files); }
+    catch (e) { toast(e.message, true); }
+  }
+  function renderFiles(files) {
+    lastFiles = files;
+    $("file-list").replaceChildren(...files.map((f) => el("tr", {},
         el("td", { className: "name", textContent: f.name }),
         el("td", { className: "num", textContent: fmtSize(f.size) }),
         el("td", { textContent: fmtDate(f.lastModified) }),
         el("td", { className: "row-actions" },
-          el("button", { className: "link", textContent: "Download", onclick: () => download(f.name) }),
-          el("button", { className: "link danger", textContent: "Delete", onclick: () => removeFile(f.name) })),
-      )));
-      $("files-empty").hidden = files.length > 0;
-    } catch (e) { toast(e.message, true); }
+          el("button", { className: "link", textContent: t("files.download"), onclick: () => download(f.name) }),
+          el("button", { className: "link danger", textContent: t("files.delete"),
+            onclick: (e) => confirmClick(e.currentTarget, () => removeFile(f.name), t("files.deleteHint", { name: f.name })) })),
+    )));
+    $("files-empty").hidden = files.length > 0;
   }
 
   async function download(name) {
@@ -385,8 +408,7 @@
   }
 
   async function removeFile(name) {
-    if (!confirm(`Delete “${name}” from My files?`)) return;
-    try { await api("DELETE", `/files?name=${encodeURIComponent(name)}`); toast("File deleted."); loadFiles(); }
+    try { await api("DELETE", `/files?name=${encodeURIComponent(name)}`); toast(t("files.deleted")); loadFiles(); }
     catch (e) { toast(e.message, true); }
   }
 
@@ -395,8 +417,8 @@
       const x = new XMLHttpRequest();
       x.open("PUT", url);
       x.upload.onprogress = (ev) => ev.lengthComputable && onProgress(ev.loaded / ev.total);
-      x.onload = () => (x.status < 300 ? resolve() : reject(new Error(`Upload failed (${x.status})`)));
-      x.onerror = () => reject(new Error("Upload failed (network)"));
+      x.onload = () => (x.status < 300 ? resolve() : reject(new Error(t("files.uploadFailed", { status: x.status }))));
+      x.onerror = () => reject(new Error(t("files.uploadNetwork")));
       x.send(file);
     });
   }
@@ -409,12 +431,12 @@
       const row = el("li", {}, el("span", { textContent: name }), pct);
       list.append(row);
       try {
-        if (file.size > 5 * 1024 ** 3) throw new Error("Please put files larger than 5 GB directly on the machine.");
+        if (file.size > 5 * 1024 ** 3) throw new Error(t("files.tooLarge"));
         const { url } = await api("POST", "/files/upload-url", { name });
         await putWithProgress(url, file, (p) => (pct.textContent = `${Math.round(p * 100)} %`));
         row.remove();
       } catch (e) {
-        pct.textContent = "Error";
+        pct.textContent = t("files.error");
         toast(`${name}: ${e.message}`, true);
       }
     }
@@ -423,8 +445,8 @@
 
   $("file-input").onchange = (e) => { upload([...e.target.files]); e.target.value = ""; };
   const dz = $("dropzone");
-  ["dragenter", "dragover"].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.add("over"); }));
-  ["dragleave", "drop"].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.remove("over"); }));
+  ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("over"); }));
   dz.addEventListener("drop", (e) => upload([...e.dataTransfer.files]));
 
   // ------------------------------------------------------------ Admin
@@ -435,30 +457,28 @@
       const [{ users }, { instances }] = await Promise.all([api("GET", "/admin/users"), api("GET", "/admin/instances")]);
       $("user-list").replaceChildren(...users.map((u) => el("tr", {},
         el("td", { className: "name", textContent: u.email || u.username }),
-        el("td", { textContent: !u.enabled ? "Disabled" : u.status === "FORCE_CHANGE_PASSWORD" ? "Invited" : "Active" }),
-        el("td", { textContent: u.admin ? "Administrator" : "User" }),
-        el("td", {}, el("span", { className: `pill ${INST_PILL[u.instance] || ""}`, textContent: STATE_TEXT[u.instance] || u.instance })),
+        el("td", { textContent: t(!u.enabled ? "admin.disabled" : u.status === "FORCE_CHANGE_PASSWORD" ? "admin.invited" : "admin.active") }),
+        el("td", { textContent: t(u.admin ? "admin.administrator" : "admin.user") }),
+        el("td", {}, el("span", { className: `pill ${INST_PILL[u.instance] || ""}`, textContent: stateText(u.instance) })),
         el("td", { className: "row-actions" },
-          el("button", { className: "link", textContent: u.admin ? "Remove admin" : "Make admin",
+          el("button", { className: "link", textContent: t(u.admin ? "admin.removeAdmin" : "admin.makeAdmin"),
             onclick: () => adminAction("POST", u, { admin: !u.admin }) }),
-          el("button", { className: "link", textContent: u.enabled ? "Disable" : "Enable",
+          el("button", { className: "link", textContent: t(u.enabled ? "admin.disable" : "admin.enable"),
             onclick: () => adminAction("POST", u, { enabled: !u.enabled }) }),
-          el("button", { className: "link danger", textContent: "Delete", onclick: () => {
-            if (confirm(`Delete ${u.email}? This user's machine and all their files will be deleted too.`)) adminAction("DELETE", u);
-          } })),
+          el("button", { className: "link danger", textContent: t("admin.delete"), onclick: (e) => confirmClick(e.currentTarget, () => adminAction("DELETE", u),
+            t("admin.userHint", { email: u.email || u.username })) })),
       )));
       $("instance-list").replaceChildren(...instances.map((i) => el("tr", {},
         el("td", { className: "name", textContent: i.ownerEmail || i.owner }),
         el("td", {}, el("span", { className: `pill ${INST_PILL[i.state] || ""}`,
-          textContent: (STATE_TEXT[i.state] || i.state) + (i.phase && i.phase !== "ready" ? ` (${i.phase})` : "") })),
+          textContent: stateText(i.state) + (i.phase && i.phase !== "ready" ? ` (${i.phase})` : "") })),
         el("td", { textContent: i.instanceType }),
-        el("td", { className: "num", textContent: i.runningHours != null ? i.runningHours.toLocaleString("en-GB") : "–" }),
+        el("td", { className: "num", textContent: i.runningHours != null ? i.runningHours.toLocaleString(i18n.locale()) : "–" }),
         el("td", {}, el("code", { textContent: i.publicIp || "–" })),
         el("td", { className: "row-actions" },
-          i.state === "running" ? el("button", { className: "link", textContent: "Stop", onclick: () => instAction(i.instanceId, "stop") }) : "",
-          el("button", { className: "link danger", textContent: "Delete", onclick: () => {
-            if (confirm("Delete this machine permanently?")) instAction(i.instanceId, "terminate");
-          } })),
+          i.state === "running" ? el("button", { className: "link", textContent: t("admin.stop"), onclick: () => instAction(i.instanceId, "stop") }) : "",
+          el("button", { className: "link danger", textContent: t("admin.delete"), onclick: (e) => confirmClick(e.currentTarget, () => instAction(i.instanceId, "terminate"),
+            t("admin.machineHint")) })),
       )));
       $("inst-empty").hidden = instances.length > 0;
     } catch (e) { toast(e.message, true); }
@@ -467,12 +487,12 @@
   async function adminAction(method, u, body) {
     try {
       await api(method, `/admin/users/${encodeURIComponent(u.username)}`, body);
-      toast("Saved.");
+      toast(t("admin.saved"));
       loadAdmin();
     } catch (e) { toast(e.message, true); }
   }
   async function instAction(id, action) {
-    try { await api("POST", `/admin/instances/${id}/${action}`); toast("Done."); loadAdmin(); }
+    try { await api("POST", `/admin/instances/${id}/${action}`); toast(t("admin.done")); loadAdmin(); }
     catch (e) { toast(e.message, true); }
   }
 
@@ -481,20 +501,38 @@
     const btn = e.submitter;
     busy(btn, async () => {
       await api("POST", "/admin/users", { email: $("new-email").value, admin: $("new-admin").checked });
-      toast("Invitation sent by email.");
+      toast(t("admin.inviteSent"));
       e.target.reset();
       loadAdmin();
     });
   };
 
   // ------------------------------------------------------------ Navigation
-  document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => {
-    document.querySelectorAll(".tab").forEach((x) => x.setAttribute("aria-selected", x === t));
-    const v = t.dataset.view;
+  document.querySelectorAll(".tab").forEach((tab) => (tab.onclick = () => {
+    document.querySelectorAll(".tab").forEach((x) => x.setAttribute("aria-selected", x === tab));
+    const v = tab.dataset.view;
     $("view-workspace").hidden = v !== "workspace";
     $("view-admin").hidden = v !== "admin";
     if (v === "admin") loadAdmin();
   }));
+
+  // ------------------------------------------------------------ Language
+  // Re-render everything in the new language without a reload.
+  function applyLanguage() {
+    document.querySelectorAll("[data-armed]").forEach((b) => {   // cancel pending "click again" confirmations
+      clearTimeout(b._disarm); delete b.dataset.armed; b.textContent = b._label;
+    });
+    i18n.applyStatic({ max: maxHours });
+    if (!$("rs-sent").closest("form").hidden) renderCodeSent();
+    authMsg("");
+    if (lastInstance) renderInstance(lastInstance);
+    if (lastFiles) renderFiles(lastFiles);
+    if ($("m-log").open) loadLog();
+    if (!$("view-admin").hidden) loadAdmin();
+  }
+  i18n.onChange = applyLanguage;
+  i18n.applyStatic({ max: maxHours });
+  $("log-text").textContent = t("log.loading");
 
   // ------------------------------------------------------------ Start
   $("btn-logout").onclick = logout;

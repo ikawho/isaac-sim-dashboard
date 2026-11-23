@@ -1,4 +1,4 @@
-# Isaac Sim Dashboard v1.1
+# Isaac Sim Dashboard v1.2
 
 Isaac Sim Dashboard is a web page where each user signs in and starts their own cloud GPU machine running NVIDIA Isaac Sim with one click. Isaac Sim then runs in a browser tab, streamed from the machine. Use it when you need Isaac Sim but don't have a suitable NVIDIA RTX workstation, or when several people need their own Isaac Sim without sharing one computer. Every user gets private file storage that appears inside Isaac Sim, and administrators can invite users and see every machine. The whole setup lives in your own AWS account. You install it with one command and remove it with one command, both run from AWS CloudShell, a terminal in the browser that comes with every AWS account.
 
@@ -70,7 +70,9 @@ aws cognito-idp admin-set-user-password --user-pool-id <POOL_ID> --username <ADM
 
 Files you upload under **My files** appear in Isaac Sim in the folder `/workspace`. What you save there is copied back every 2 minutes and when the machine stops. Running machines are stopped automatically after 8 hours, so a forgotten machine doesn't keep costing money.
 
-Administrators see an extra **Admin** tab, where they can invite users by email, make other users admins, disable accounts, and stop or delete any machine.
+Administrators see an extra **Admin** tab (**Verwaltung** in German), where they can invite users by email, make other users admins, disable accounts, and stop or delete any machine.
+
+The dashboard is in German by default. Use the German and UK flags at the top right to switch between German and English; the browser remembers the choice. Only the dashboard itself is translated. Status details and error messages sent by the server, the boot log, emails and everything in CloudShell stay in English.
 
 ### Updating and removing
 
@@ -151,6 +153,7 @@ FRAME_ANCESTORS="https://olat.vcrp.de https://lms.example.org" ./isaac.sh up
 
 | What you see | What to do |
 |---|---|
+| **S3 Bucket does not exist** during `./isaac.sh up` | SAM's upload bucket was deleted. Since v1.2, `./isaac.sh up` notices this and recreates it, so just run it again. With older versions, delete the stack `aws-sam-cli-managed-default` in the CloudFormation console first. |
 | **Start failed – No GPU capacity available** | AWS has no free GPU machine of any listed type. Try again later, or use another region. |
 | **Start failed – vCPU quota** | Request a higher GPU quota (see Prerequisites). |
 | A setup step takes very long, or **Start failed** with "see boot log" | Open **Boot log** under the status. It shows the machine's setup output, updated every 15 seconds. The last lines usually show the error. |
